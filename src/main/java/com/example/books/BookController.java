@@ -58,6 +58,14 @@ public class BookController {
         }
     }
 
+    // What the API returns, decoupled from the JPA entity: a field added to Book later (internal flag,
+    // relation...) is not exposed by accident, and renaming a column doesn't change the JSON contract.
+    public record BookResponse(Long id, String title, String author, Integer publicationYear, Long version) {
+        static BookResponse from(Book book) {
+            return new BookResponse(book.getId(), book.getTitle(), book.getAuthor(), book.getPublicationYear(), book.getVersion());
+        }
+    }
+
     // Whitelist of what ?sort= may contain: anything else never reaches the SQL ORDER BY.
     private static final List<String> SORTABLE = List.of("id", "title", "author", "publicationYear");
 
@@ -69,7 +77,7 @@ public class BookController {
 
     // ?page=0&size=20&sort=title,asc  (size is capped at 100 in application.properties)
     @GetMapping
-    public PagedModel<Book> findAll(Pageable pageable) {
+    public PagedModel<BookResponse> findAll(Pageable pageable) {
         for (Sort.Order order : pageable.getSort()) {
             if (!SORTABLE.contains(order.getProperty())) {
                 throw badRequest("Cannot sort by '" + order.getProperty() + "', allowed: " + SORTABLE);
@@ -84,27 +92,28 @@ public class BookController {
         Sort sort = pageable.getSort().getOrderFor("id") == null
                 ? pageable.getSort().and(Sort.by("id"))
                 : pageable.getSort();
-        return new PagedModel<>(repository.findAll(PageRequest.of(pageable.getPageNumber(), pageable.getPageSize(), sort)));
+        return new PagedModel<>(repository.findAll(PageRequest.of(pageable.getPageNumber(), pageable.getPageSize(), sort))
+                .map(BookResponse::from));
     }
 
     @GetMapping("/{id}")
-    public Book findById(@PathVariable Long id) {
-        return repository.findById(id).orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Book " + id + " not found"));
+    public BookResponse findById(@PathVariable Long id) {
+        return BookResponse.from(findBook(id));
     }
 
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
-    public Book create(@Valid @RequestBody BookRequest req) {
-        return repository.save(new Book(req.title(), req.author(), req.publicationYear()));
+    public BookResponse create(@Valid @RequestBody BookRequest req) {
+        return BookResponse.from(repository.save(new Book(req.title(), req.author(), req.publicationYear())));
     }
 
     @PutMapping("/{id}")
     @Transactional
-    public Book update(@PathVariable Long id, @Valid @RequestBody BookRequest req) {
+    public BookResponse update(@PathVariable Long id, @Valid @RequestBody BookRequest req) {
         if (req.version() == null) {
             throw badRequest("version is required: send the version of the book you read");
         }
-        Book book = findById(id);
+        Book book = findBook(id);
         // Lost update: Alice and Bob both read version 3, Bob saves (-> version 4),
         // Alice's PUT still says 3, so she gets a 409 instead of silently erasing Bob's change.
         if (!req.version().equals(book.getVersion())) {
@@ -112,16 +121,21 @@ public class BookController {
                     "Book was modified by someone else (current version " + book.getVersion() + "): reload it and retry");
         }
         book.update(req.title(), req.author(), req.publicationYear());
-        // At commit Hibernate runs "UPDATE ... WHERE id = ? AND version = ?": if another PUT committed
-        // between our check and now, 0 rows match -> OptimisticLockingFailureException -> 409 below.
-        return book;
+        // Flush now runs "UPDATE ... WHERE id = ? AND version = ?" and increments version, so the response
+        // carries the new version. If another PUT committed between our check and now, 0 rows match
+        // -> OptimisticLockingFailureException -> 409 below.
+        return BookResponse.from(repository.saveAndFlush(book));
     }
 
     @DeleteMapping("/{id}")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     @Transactional
     public void delete(@PathVariable Long id) {
-        repository.delete(findById(id));
+        repository.delete(findBook(id));
+    }
+
+    private Book findBook(Long id) {
+        return repository.findById(id).orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Book " + id + " not found"));
     }
 
     // Spring's 400 only says "Invalid request content": add which fields are wrong and why.
