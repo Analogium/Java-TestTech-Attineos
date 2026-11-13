@@ -4,6 +4,7 @@ import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.Id;
+import jakarta.persistence.Version;
 
 @Entity
 public class Book {
@@ -17,6 +18,9 @@ public class Book {
     private String author;
     @Column(nullable = false)
     private Integer publicationYear;
+    // Incremented by Hibernate on every update; returned to the client, who must send it back on PUT.
+    @Version
+    private Long version;
 
     protected Book() {
     }
@@ -31,6 +35,7 @@ public class Book {
     public String getTitle() { return title; }
     public String getAuthor() { return author; }
     public Integer getPublicationYear() { return publicationYear; }
+    public Long getVersion() { return version; }
 
     public void update(String title, String author, Integer publicationYear) {
         this.title = title;
